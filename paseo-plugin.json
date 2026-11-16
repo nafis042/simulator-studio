@@ -1,0 +1,10 @@
+{
+  "id": "simulator-studio",
+  "name": "Simulator Studio",
+  "description": "A 60 FPS iOS simulator view with live touch, screenshot annotation and screen recording that go straight to the chat.",
+  "icon": "assets/icon.png",
+  "requirements": {
+    "paseo": ">=0.16.0-beta.2"
+  },
+  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts"]]
+}
