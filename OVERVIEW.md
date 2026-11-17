@@ -24,7 +24,7 @@ These work in the Paseo desktop app on a Mac, for iOS simulators.
 - **A real iPhone or iPad on a cable.** It appears in the device list next to the simulators, with
   the same fast view, pencil and record button. Touch is optional and slower: after you give your
   Apple developer Team ID in the panel, taps, long presses, swipes, typed text and Home reach the
-  phone when you let go, about a second each, in portrait. Agents can't drive a real iPhone yet.
+  phone when you let go, about a second each, in portrait. Once touch is set up you can also let agents in the phone's workspace drive it, like a simulator.
 
 Android devices, and Paseo on a phone or in a browser, use the slower live view described below.
 
@@ -111,7 +111,7 @@ phone too, as they can already take screenshots of it with Xcode's tools. A reco
 by the helper to a temporary folder and moved into the workspace by the plugin. Everything shown on
 the phone, notifications included, is in what you draw on or record. Touch on an iPhone is off
 until you save a Team ID: on the first tap agent-device builds its XCTest runner with Xcode, signs
-it with that team (which registers an app ID there) and installs it on the phone.
+it with that team (which registers an app ID there) and installs it on the phone. Agents get the phone only if you also allow agent tools on it, and then only agents started in the workspace holding it are given the plugin's tools for it. On your own phone they can do anything agent-device can: open, install or remove any app, read the screen (messages and notifications included), app logs and files, record the screen and change settings. What they read goes to their model provider. Clearing or changing the Team ID takes every iPhone away from agents, and an unused control session on the phone ends after 30 minutes. This steers the tools the plugin hands out; it is not a wall around the phone: an agent that can run commands on your Mac can use Xcode's own tools on any paired device, with or without this plugin.
 
 The first time an agent drives a device, agent-device installs its helpers on it: an XCTest runner
 app it builds locally with Xcode for iOS, and two helper apps it ships with for Android (one reads

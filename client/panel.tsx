@@ -91,12 +91,9 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
             onAdd={() => setPicking(true)}
             onAnnotate={fast ? () => setAnnotating(!annotating) : undefined}
           />
-          {/* shortcut: agents can't drive a physical iPhone yet (their runner would need the team too) */}
-          {phone ? (
-            <PhoneTouch theme={theme} hostId={host.id} team={team} />
-          ) : (
-            <AgentTools theme={theme} hostId={host.id} device={device} />
-          )}
+          {phone ? <PhoneTouch theme={theme} hostId={host.id} team={team} /> : null}
+          {/* agents' runner on an iPhone is signed with the team given for touch */}
+          {phone && !team ? null : <AgentTools theme={theme} hostId={host.id} device={device} />}
           {device.state === "booted" ? (
             // keyed: a new device starts with an empty picture, not taps on the old one's
             <>
@@ -160,9 +157,11 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
 
 /** What agent-device installs on a device the first time an agent drives it. */
 const installs = (device: Device) =>
-  device.platform === "ios"
-    ? "agent-device builds its XCTest runner app with Xcode on this Mac and installs it on the simulator."
-    : `agent-device installs two helper apps it ships with on the ${device.kind === "physical" ? "phone" : "emulator"}: one that reads the screen's layout and one keyboard for typing.`;
+  isPhone(device.id)
+    ? "agent-device builds its XCTest runner app with Xcode, signs it with your Apple developer team and installs it on the iPhone. On your own phone agents can then do anything agent-device can: open, install or remove any app, read the screen (messages and notifications included), app logs and files, record the screen and change settings. What they read goes to their model provider. Agents already running need a restart to get the phone."
+    : device.platform === "ios"
+      ? "agent-device builds its XCTest runner app with Xcode on this Mac and installs it on the simulator."
+      : `agent-device installs two helper apps it ships with on the ${device.kind === "physical" ? "phone" : "emulator"}: one that reads the screen's layout and one keyboard for typing.`;
 
 /**
  * Whether agents started in this workspace get tools to drive the device. Off until the user allows

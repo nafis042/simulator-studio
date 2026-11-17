@@ -8,7 +8,7 @@ import path from "node:path";
 import { LONG_PRESS_MS, type Device } from "../shared/contracts";
 import { run, sleep } from "./exec";
 import { NODE, NODE_ENV, PLUGIN_DIR, dependencyFile } from "./paths";
-import { STATE_DIR } from "./state";
+import { STATE_DIR, holderOf, sessionName } from "./state";
 
 // A physical iPhone/iPad over a cable. The screen comes from a small helper app (phone-capture.swift)
 // that sends JPEG frames over a Unix socket in an owner-only temp folder; touch goes through
@@ -278,9 +278,6 @@ async function close(s: Session): Promise<void> {
     (current) => current === s && sessions.delete(s.udid),
     () => {},
   );
-  const team = teams.get(s.udid);
-  teams.delete(s.udid);
-  if (team) await agent(s.udid, team, "close", [], 10_000).catch(() => {});
 }
 
 export async function stopPhones(): Promise<void> {
@@ -350,7 +347,6 @@ export async function phoneStopRecording(udid: string): Promise<string> {
 
 // --- touch: agent-device on the phone, one action at a time ---
 
-const teams = new Map<string, string>();
 const busy = new Set<string>();
 const screens = new Map<string, { at: number; w: number; h: number }>();
 const devicectl = async <T>(udid: string, what: string) =>
@@ -360,19 +356,45 @@ const devicectl = async <T>(udid: string, what: string) =>
     ) as { result: T }
   ).result;
 
-/** Runs one agent-device command; failures carry its JSON error text (signing, developer mode ...). */
+/**
+ * What agent-device needs to sign its runner for a phone. Its background process keeps the
+ * environment it was started with, so the team has a state folder of its own: whoever starts the
+ * process there (the panel or an agent) starts it with this.
+ */
+export const agentEnv = (team: string) => ({
+  AGENT_DEVICE_STATE_DIR: path.join(STATE_DIR, `agent-device-${team}`),
+  AGENT_DEVICE_IOS_TEAM_ID: team,
+  AGENT_DEVICE_IOS_BUNDLE_ID: `com.simulatorstudio.runner.${team.toLowerCase()}`,
+  // a session nobody used for 30 minutes ends, and with it the runner on the phone
+  // shortcut: not while an agent left a capture (logs, record, trace) running in it; deny those with AGENT_DEVICE_DAEMON_POLICY if that happens
+  AGENT_DEVICE_SESSION_IDLE_TIMEOUT_MS: "1800000",
+});
+
 function agent(udid: string, team: string, command: string, args: string[] = [], timeoutMs = 120_000) {
+  // the session of the workspace holding the phone: its agents use the same one, so the panel and
+  // they take turns instead of locking each other out
+  const holder = holderOf(`ios:${udid}`);
+  if (!holder) return Promise.reject(new Error("Add the iPhone to a workspace first"));
+  return call(udid, team, sessionName(holder.workspaceId, udid), command, args, timeoutMs);
+}
+
+/** Ends a workspace's session on a phone (released, moved, consent or team withdrawn), agents' use included. */
+export const closePhoneSession = (udid: string, workspaceId: string, team: string) =>
+  call(udid, team, sessionName(workspaceId, udid), "close", [], 10_000).catch(() => {});
+
+/** Runs one agent-device command; failures carry its JSON error text (signing, developer mode ...). */
+function call(
+  udid: string,
+  team: string,
+  session: string,
+  command: string,
+  args: string[],
+  timeoutMs: number,
+) {
   if (!/^[A-Z0-9]{10}$/.test(team)) return Promise.reject(new Error("Invalid Apple Team ID"));
-  // own state dir per team: its background process is always started with that team
-  const env = {
-    ...process.env,
-    ...NODE_ENV,
-    AGENT_DEVICE_STATE_DIR: path.join(STATE_DIR, `agent-device-${team}`),
-    AGENT_DEVICE_IOS_TEAM_ID: team,
-    AGENT_DEVICE_IOS_BUNDLE_ID: `com.simulatorstudio.runner.${team.toLowerCase()}`,
-  };
+  const env = { ...process.env, ...NODE_ENV, ...agentEnv(team) };
   // flags first, then `--`: typed text can't be read as a flag
-  const target = ["--udid", udid, "--session", `panel-${udid}`];
+  const target = ["--udid", udid, "--session", session];
   const argv = [AGENT_DEVICE, "--platform", "ios", ...target, "--json", "--", command, ...args];
   return new Promise<void>((resolve, reject) =>
     execFile(
@@ -436,7 +458,6 @@ async function act(udid: string, team: string, command: string, args: (size: Siz
     const size = await screen(udid);
     const frame = (await sessions.get(udid)?.catch(() => undefined))?.frame;
     if (frame && isWide(frame)) throw new Error("Touch works in portrait only");
-    teams.set(udid, team);
     const send = () => agent(udid, team, command, args(size));
     await send().catch(async (error: Error & { code?: string }) => {
       if (error.code !== "SESSION_NOT_FOUND") throw error;

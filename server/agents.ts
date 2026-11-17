@@ -5,20 +5,38 @@ import type { Assignment } from "../shared/contracts";
 import { serialOf } from "./android";
 import { NODE, NODE_ENV, PLUGIN_DIR, dependencyFile } from "./paths";
 import type { Workspace } from "./picker";
-import { STATE_DIR, anyAgentTools, assignmentFor, assignments, isInside, targetOf } from "./state";
+import { agentEnv } from "./phone";
+import {
+  STATE_DIR,
+  agentPhone,
+  anyAgentTools,
+  assignmentFor,
+  assignments,
+  isInside,
+  sessionName,
+  targetOf,
+  team,
+} from "./state";
 
 const AGENT_DEVICE = dependencyFile("agent-device", "bin/agent-device.mjs");
 const CONFIG_DIR = path.join(STATE_DIR, "agent-device");
 export const PICKER_SOCKET = path.join(STATE_DIR, "picker.sock");
-const configFile = (workspaceId: string) =>
-  path.join(CONFIG_DIR, `${workspaceId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+// Agents started while their workspace held an iPhone they may drive got the signing team in
+// their environment, and read a file of their own (`signer` in its name). Every other agent reads
+// the plain file, which never names a phone. Deleting the signed file takes the phone, and all
+// device tools, from the former.
+// shortcut: this steers the tools, it isn't a wall. An agent can name another device in a tool
+// call, and one with a shell can run Xcode's own tools on any paired phone; neither needs this
+// plugin. Give agents a policy file (AGENT_DEVICE_DAEMON_POLICY) if they must be held to one device.
+const configFile = (workspaceId: string, signer = "") =>
+  path.join(CONFIG_DIR, `${workspaceId.replace(/[^A-Za-z0-9_-]/g, "_")}${signer && `.${signer}`}.json`);
 
 /**
  * agent-device reads this file on every tool call, so agents follow it as soon as it changes. It
  * names the device the workspace's agents drive and a session named after that device: a session
  * stays on the device it first used, so a new device needs a new session.
  */
-async function writeAgentConfig(assignment: Assignment): Promise<string> {
+async function writeAgentConfig(assignment: Assignment, signer = ""): Promise<string> {
   let target: { platform: "ios"; udid: string } | { platform: "android"; serial: string };
   if (assignment.deviceId.startsWith("ios:"))
     target = { platform: "ios", udid: assignment.deviceId.slice(4) };
@@ -29,8 +47,8 @@ async function writeAgentConfig(assignment: Assignment): Promise<string> {
     target = { platform: "android", serial: serial ?? "off" };
   }
   const device = target.platform === "ios" ? target.udid : target.serial;
-  const session = `paseo-${assignment.workspaceId}-${device}`.replace(/[^A-Za-z0-9_.-]/g, "_");
-  const file = configFile(assignment.workspaceId);
+  const session = sessionName(assignment.workspaceId, device);
+  const file = configFile(assignment.workspaceId, signer);
   await writeFile(
     `${file}.tmp`,
     `${JSON.stringify({ session, sessionLock: "strip", ...target }, null, 2)}\n`,
@@ -56,8 +74,10 @@ export function syncAgentConfigs(): Promise<void> {
       await mkdir(CONFIG_DIR, { recursive: true });
       const keep = new Set<string>();
       for (const workspaceId of new Set(assignments().map((a) => a.workspaceId))) {
-        const target = targetOf(workspaceId);
-        if (target) keep.add(path.basename(await writeAgentConfig(target)));
+        const plain = targetOf(workspaceId, false);
+        if (plain) keep.add(path.basename(await writeAgentConfig(plain)));
+        const signed = agentPhone(workspaceId) && targetOf(workspaceId);
+        if (signed) keep.add(path.basename(await writeAgentConfig(signed, team())));
       }
       for (const name of await readdir(CONFIG_DIR))
         if (!keep.has(name)) await rm(path.join(CONFIG_DIR, name), { force: true });
@@ -105,6 +125,17 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
     if (!workspace) return undefined;
     // picks up an emulator started outside the plugin since the last change
     await syncAgentConfigs().catch((error) => console.error("syncing agent-device configs:", error));
+    // shortcut: decided when the agent starts; one started before the iPhone was allowed needs a
+    // restart to drive it, and one started with it loses its device tools when the phone leaves.
+    // Its simulators run agent-device's runner under the team's bundle id, built once more, and in
+    // the team's state folder: agents started earlier may find such a simulator in use until restarted.
+    // The team goes only to an agent in the phone's own workspace as Paseo lists it: not to one in
+    // a workspace nested in that folder, nor on the word of the folder a client gave for it.
+    const signer =
+      agentPhone(workspace.workspaceId) &&
+      (await workspaceAt(paseo, config.cwd).catch(() => null))?.workspaceId === workspace.workspaceId
+        ? team()
+        : "";
     return {
       ...request,
       config: {
@@ -117,8 +148,9 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
             args: [AGENT_DEVICE, "mcp"],
             env: {
               ...NODE_ENV,
-              AGENT_DEVICE_CONFIG: configFile(workspace.workspaceId),
+              AGENT_DEVICE_CONFIG: configFile(workspace.workspaceId, signer),
               AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1",
+              ...(signer ? agentEnv(signer) : {}),
             },
           },
           "device-picker": {
@@ -128,11 +160,11 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
             env: {
               ...NODE_ENV,
               PASEO_DEVICES_SOCKET: PICKER_SOCKET,
-              PASEO_DEVICES_WORKSPACE: JSON.stringify(workspace),
+              PASEO_DEVICES_WORKSPACE: JSON.stringify({ ...workspace, phones: Boolean(signer) }),
             },
           },
         },
-        ...(targetOf(workspace.workspaceId)
+        ...(targetOf(workspace.workspaceId, Boolean(signer))
           ? {}
           : { systemPrompt: [config.systemPrompt, NO_DEVICE].filter(Boolean).join("\n\n") }),
       },

@@ -5,10 +5,12 @@ import type { Assignment } from "../shared/contracts";
 
 export type Workspace = Omit<Assignment, "deviceId">;
 
+/** The agent asking: its workspace, and whether it was started with the team that signs for an iPhone. */
+export type Caller = Workspace & { phones?: boolean };
 /** What an agent can do: see the devices it may use, switch between its workspace's, take a free one. */
 export interface Picker {
-  list(workspace: Workspace): Promise<string>;
-  use(workspace: Workspace, deviceId: string): Promise<string>;
+  list(workspace: Caller): Promise<string>;
+  use(workspace: Caller, deviceId: string): Promise<string>;
 }
 
 const TOOLS = [

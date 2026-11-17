@@ -19,6 +19,7 @@ import { PICKER_SOCKET, injectDeviceTools, syncAgentConfigs, workspaceAt } from 
 import { encode, forget, type Frame } from "./server/frames";
 import * as ios from "./server/ios";
 import {
+  closePhoneSession,
   listPhones,
   phoneHome,
   phoneSwipe,
@@ -207,6 +208,13 @@ const frameOf = (deviceId: string): Promise<Frame | null> =>
       ? ios.iosFrame(deviceId.slice(4))
       : serial(deviceId).then(android.androidFrame);
 
+/**
+ * Ends a workspace's agent-device session on a phone it gave up, so the next holder isn't locked out.
+ * shortcut: gives up after 10 s behind a long agent command; the session then lasts until it idles out
+ */
+const endPhoneSession = (deviceId: string, workspaceId: string) =>
+  isPhone(deviceId) && team() ? closePhoneSession(deviceId.slice(4), workspaceId, team()) : undefined;
+
 /** A personal phone's screen and touch are only for a workspace that holds it. */
 function held(deviceId: string): void {
   if (!holderOf(deviceId)) throw new Error("Add the iPhone to a workspace first");
@@ -259,10 +267,15 @@ export default function contribute(server: PluginServerContext) {
   const picker: Picker = {
     async list(workspace) {
       await ready;
-      const allowed = withStatus((await listDevices()).devices).filter((d) => d.agentTools);
+      const allowed = withStatus((await listDevices()).devices).filter(
+        // an iPhone is only its own workspace's, and only for agents started with its signing team
+        (d) =>
+          d.agentTools &&
+          (!isPhone(d.id) || (workspace.phones && holderOf(d.id)?.workspaceId === workspace.workspaceId)),
+      );
       if (!allowed.length)
         return "The user hasn't allowed agents on any device. They do that in this workspace's Device panel.";
-      const target = targetOf(workspace.workspaceId)?.deviceId;
+      const target = targetOf(workspace.workspaceId, Boolean(workspace.phones))?.deviceId;
       return allowed
         .map((d) => {
           const holder = holderOf(d.id);
@@ -277,7 +290,7 @@ export default function contribute(server: PluginServerContext) {
         })
         .join("\n");
     },
-    async use(workspace, deviceId) {
+    async use({ phones, ...workspace }, deviceId) {
       await ready;
       const listed = (await listDevices()).devices;
       const device = withStatus(listed).find((d) => d.id === deviceId);
@@ -288,6 +301,10 @@ export default function contribute(server: PluginServerContext) {
         throw new Error(`${device.name} isn't on this host right now; use another device`);
       if (!device.agentTools)
         throw new Error(`The user hasn't allowed agents on ${device.name}; they do that in the Device panel`);
+      if (isPhone(deviceId) && holderOf(deviceId)?.workspaceId !== workspace.workspaceId)
+        throw new Error(`${device.name} isn't this workspace's; the user adds it in the Device panel`);
+      if (isPhone(deviceId) && !phones)
+        throw new Error(`This agent was started before ${device.name} was allowed; the user restarts it`);
       // another workspace's device stays theirs
       await addAssignment(workspace, deviceId, false);
       await setTarget(workspace.workspaceId, deviceId);
@@ -310,7 +327,16 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(teamRpc, async ({ team: value }) => {
     await ready;
-    await setTeam(value);
+    const old = team();
+    if (value !== old) {
+      // takes every iPhone from agents first (the user allows them again under the new team),
+      // then ends the sessions they and the panel left on phones: none can be reopened meanwhile
+      await setTeam(value);
+      await syncAgentConfigs();
+      if (old)
+        for (const a of assignments())
+          if (isPhone(a.deviceId)) await closePhoneSession(a.deviceId.slice(4), a.workspaceId, old);
+    }
     return { message: value ? "Touch is set up for iPhones" : "Touch is off for iPhones" };
   });
 
@@ -321,13 +347,16 @@ export default function contribute(server: PluginServerContext) {
       if (!(await removeAssignment(workspace.workspaceId, deviceId)))
         throw new Error("It isn't this workspace's device any more");
       await syncAgentConfigs();
+      await endPhoneSession(deviceId, workspace.workspaceId);
       return { message: "Released the device" };
     }
     if (!booting.has(deviceId) && !(await listDevices()).devices.some((d) => d.id === deviceId)) {
       throw new Error("That device isn't on this host");
     }
+    const before = holderOf(deviceId)?.workspaceId;
     const result = await addAssignment(workspace, deviceId, takeOver);
     await syncAgentConfigs();
+    if (before && before !== workspace.workspaceId) await endPhoneSession(deviceId, before);
     return { message: result };
   });
 
@@ -336,9 +365,15 @@ export default function contribute(server: PluginServerContext) {
     if (allow && !(await listDevices()).devices.some((d) => d.id === deviceId)) {
       throw new Error("That device isn't on this host");
     }
+    // shortcut: not tied to the asking workspace; a panel a poll behind can allow a phone another
+    // workspace just took. Send the workspace and refuse a stale one if that matters.
+    // the runner agents use on an iPhone is signed with the team given for touch
+    if (allow && isPhone(deviceId) && !team()) throw new Error("Set up touch for this iPhone first");
     await allowAgentTools(deviceId, allow);
     // agents already running read their workspace's file on every call
     await syncAgentConfigs();
+    const holder = holderOf(deviceId);
+    if (!allow && holder) await endPhoneSession(deviceId, holder.workspaceId);
     return { message: allow ? "Agents in its workspace can drive it" : "Agents can't drive it any more" };
   });
 
@@ -355,6 +390,8 @@ export default function contribute(server: PluginServerContext) {
         await turnOff(deviceId).catch((error) => console.error("turning off", deviceId, error));
     }
     await syncAgentConfigs();
+    // after the files are gone, so an agent can't reopen what this ends
+    for (const { deviceId } of held) await endPhoneSession(deviceId, workspace.id);
     listing = null;
   });
 

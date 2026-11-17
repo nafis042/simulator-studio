@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Assignment } from "../shared/contracts";
+import { isPhone, type Assignment } from "../shared/contracts";
 
 export const STATE_DIR = path.join(
   process.env.PASEO_HOME ?? path.join(os.homedir(), ".paseo"),
@@ -67,9 +67,24 @@ export async function allowAgentTools(deviceId: string, allow: boolean): Promise
 }
 export const team = () => state.team ?? "";
 export async function setTeam(value: string): Promise<void> {
+  if (value !== team()) {
+    // the runner on a phone is signed with the team: without it, or with another one, agents
+    // lose every iPhone until the user allows them again
+    state.agentTools.filter(isPhone).forEach(forgetTarget);
+    state.agentTools = state.agentTools.filter((id) => !isPhone(id));
+  }
   state.team = value || undefined;
   await save();
 }
+/** agent-device's session for a workspace's device: the panel and that workspace's agents share it. */
+export const sessionName = (workspaceId: string, device: string) =>
+  `paseo-${workspaceId}-${device}`.replace(/[^A-Za-z0-9_.-]/g, "_");
+/** Whether agents started in the workspace now get the signing team, to drive its iPhone. */
+export const agentPhone = (workspaceId: string) =>
+  team() !== "" &&
+  state.assignments.some(
+    (a) => a.workspaceId === workspaceId && isPhone(a.deviceId) && agentToolsAllowed(a.deviceId),
+  );
 export const holderOf = (deviceId: string) => state.assignments.find((a) => a.deviceId === deviceId);
 
 /** Forgets that agents in any workspace chose this device. */
@@ -82,6 +97,8 @@ function forgetTarget(deviceId: string): void {
 function unassign(deviceId: string): void {
   state.assignments = state.assignments.filter((a) => a.deviceId !== deviceId);
   forgetTarget(deviceId);
+  // a personal phone was allowed for agents "in this workspace": the next one asks again
+  if (isPhone(deviceId)) state.agentTools = state.agentTools.filter((id) => id !== deviceId);
 }
 
 /** Adds a device to a workspace's devices. Refuses one another workspace holds unless takeOver. */
@@ -113,9 +130,13 @@ export async function removeAssignment(workspaceId: string, deviceId: string): P
  * ponytail: per workspace, so two agents in one workspace switch each other; per-agent config
  * files would fix that.
  */
-export function targetOf(workspaceId: string): Assignment | undefined {
+export function targetOf(workspaceId: string, phones = true): Assignment | undefined {
   const drivable = state.assignments.filter(
-    (a) => a.workspaceId === workspaceId && agentToolsAllowed(a.deviceId),
+    (a) =>
+      a.workspaceId === workspaceId &&
+      agentToolsAllowed(a.deviceId) &&
+      // an iPhone only with the team that signs its runner, and only for agents started with it
+      (!isPhone(a.deviceId) || (phones && team() !== "")),
   );
   return drivable.find((a) => a.deviceId === state.targets[workspaceId]) ?? drivable[0];
 }
