@@ -1,7 +1,6 @@
 # Simulator Studio
 
-A [Paseo](https://paseo.sh) plugin: a 60 FPS iOS simulator view with live touch, screenshot
-annotation and screen recording that go straight to the chat. See [OVERVIEW.md](OVERVIEW.md) for
+A [Paseo](https://paseo.sh) plugin: a 60 FPS view of iOS simulators and cabled iPhones with touch, screenshot annotation and screen recording that go straight to the chat. See [OVERVIEW.md](OVERVIEW.md) for
 what it does, what it needs and where data goes.
 
 It is a fork of the [Devices](https://github.com/ZedObaia/paseo-plugins/tree/main/plugins/devices)

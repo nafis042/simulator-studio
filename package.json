@@ -1,7 +1,7 @@
 {
   "name": "paseo-plugin-simulator-studio",
-  "version": "0.1.0",
-  "description": "A 60 FPS iOS simulator view with live touch, screenshot annotation and screen recording that go straight to the chat.",
+  "version": "0.2.0",
+  "description": "A 60 FPS view of iOS simulators and cabled iPhones with touch, screenshot annotation and screen recording that go straight to the chat.",
   "license": "MIT",
   "repository": {
     "type": "git",

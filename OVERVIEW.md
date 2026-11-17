@@ -1,12 +1,12 @@
 Simulator Studio shows an iOS simulator inside Paseo at the simulator's own frame rate, about 60
-frames a second, with touch that follows the pointer. You can draw on a screenshot or record the
+frames a second, with touch that follows the pointer. A real iPhone or iPad on a cable gets the same view. You can draw on a screenshot or record the
 screen and hand either to an agent without leaving the workspace. It is built on the
 [Devices](https://github.com/ZedObaia/paseo-plugins/tree/main/plugins/devices) plugin by Zeyad Obaia
 and keeps everything that plugin does.
 
 ## What it adds
 
-These work in the Paseo desktop app on a Mac, for iOS simulators.
+These work in the Paseo desktop app on a Mac, for iOS simulators and, where noted, a cabled iPhone.
 
 - **Fast live view.** The picture is pushed to the panel as the simulator draws it. It pauses while
   the panel is hidden or the window is in the background.
