@@ -9,6 +9,17 @@ const platformSchema = z.enum(["ios", "android"]);
  */
 export const deviceId = z.string().regex(/^(ios|android|avd):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 
+/** A physical iPhone or iPad: an iOS id that isn't a simulator's UUID. */
+export const isPhone = (id: string) =>
+  id.startsWith("ios:") && !/^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$/i.test(id.slice(4));
+
+type Point = { x: number; y: number };
+/** What a finger that went down at `from` and lifted at `to` after heldMs asks of the device. */
+export const gesture = (from: Point, to: Point, heldMs: number, moved: boolean) =>
+  moved
+    ? { kind: "swipe" as const, from, to, durationMs: Math.min(5_000, Math.max(80, heldMs)) }
+    : { kind: "tap" as const, ...from, holdMs: heldMs >= LONG_PRESS_MS ? Math.min(heldMs, 5_000) : 60 };
+
 /** A touch held this long is a long press, on both platforms. */
 export const LONG_PRESS_MS = 450;
 
@@ -45,7 +56,19 @@ export const listRpc = defineRpc({
     android: z.object({ available: z.boolean(), reason: z.string() }),
     devices: z.array(device),
     assignments: z.array(assignment),
+    // "" until the user set up touch for physical iPhones
+    team: z.string(),
   }),
+});
+
+/**
+ * The Apple developer team that signs the touch runner for physical iPhones; "" turns panel touch
+ * off. Saving one is the user's consent to install that runner app on their phone.
+ */
+export const teamRpc = defineRpc({
+  name: "devices.team",
+  input: z.object({ team: z.string().regex(/^([A-Z0-9]{10})?$/) }),
+  output: z.object({ message: z.string() }),
 });
 
 const workspace = z.object({
@@ -121,7 +144,7 @@ export const streamSub = defineSubscription({
   event: z.instanceof(Uint8Array),
 });
 
-/** Starts (on) or stops recording an iOS simulator's screen into its workspace's `.paseo/recordings`; stopping returns the video's path. */
+/** Starts (on) or stops recording an iOS simulator's or cabled iPhone's screen into its workspace's `.paseo/recordings`; stopping returns the video's path. */
 export const recordRpc = defineRpc({
   name: "devices.record",
   input: z.object({ deviceId, on: z.boolean() }),

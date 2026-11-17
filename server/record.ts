@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFile, lstat, mkdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { appendFile, copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { run } from "./exec";
+import { phoneRecord, phoneStopRecording } from "./phone";
 
 const DIR = ".paseo/recordings";
 // shortcut: a recording nobody stops ends after 5 minutes, so it can't fill the disk; make it a setting if longer ones are needed
@@ -35,14 +37,23 @@ async function ignore(directory: string): Promise<void> {
   if (!listed.includes(DIR)) await appendFile(exclude, `\n**/${DIR}/\n`);
 }
 
-async function begin(udid: string, entry: Recording, workspace: string): Promise<ChildProcess> {
+const fileFor = (workspace: string, udid: string) =>
+  // the end of the id: a phone's starts with the same digits as every other phone's
+  path.join(workspace, DIR, `sim-${stamp()}-${udid.slice(-4)}.mp4`);
+
+/** Makes the workspace's recordings folder, kept out of git. */
+async function prepare(workspace: string): Promise<void> {
   // a repository can ship .paseo as a symlink: never create or write anything through it
   // shortcut: checked, then used; a process already running as the user could swap one in between. Open the folder by descriptor if that ever matters.
   for (const part of [".paseo", DIR])
     if ((await lstat(path.join(workspace, part)).catch(() => null))?.isSymbolicLink())
       throw new Error("The recordings folder points outside the workspace");
-  await mkdir(path.dirname(entry.file), { recursive: true });
+  await mkdir(path.join(workspace, DIR), { recursive: true });
   await ignore(workspace).catch(() => {});
+}
+
+async function begin(udid: string, entry: Recording, workspace: string): Promise<ChildProcess> {
+  await prepare(workspace);
   // no --force: a file that somehow exists is an error, not overwritten
   const child = spawn("xcrun", ["simctl", "io", udid, "recordVideo", "--codec", "h264", entry.file], {
     stdio: ["ignore", "ignore", "pipe"],
@@ -77,7 +88,7 @@ export function startRecording(udid: string, directory: string): Promise<unknown
   const existing = running.get(udid);
   if (existing) return existing.started;
   finished.delete(udid);
-  const entry = { file: path.join(directory, DIR, `sim-${stamp()}-${udid.slice(0, 4)}.mp4`) } as Recording;
+  const entry = { file: fileFor(directory, udid) } as Recording;
   // registered before the first await, so a second start can't slip in
   running.set(udid, entry);
   entry.started = begin(udid, entry, directory);
@@ -109,5 +120,39 @@ export async function stopRecording(udid: string): Promise<string> {
   return entry.file;
 }
 
+// A cabled iPhone is recorded by its capture helper, into the helper's own temp folder: a separate
+// app, it has no access to the workspace and never learns its path. The video is moved here on stop.
+const phones = new Map<string, { workspace: string; file: string }>();
+
+export async function startPhoneRecording(udid: string, workspace: string): Promise<void> {
+  const known = phones.has(udid);
+  // registered before the first await, so a second start can't slip in. One left by a recording
+  // that hit the 5 minutes and was never stopped is replaced: this take belongs to this workspace.
+  phones.set(udid, { workspace, file: fileFor(workspace, udid) });
+  try {
+    await prepare(workspace);
+    await phoneRecord(udid);
+  } catch (error) {
+    if (!known) phones.delete(udid);
+    throw error;
+  }
+}
+
+export async function stopPhoneRecording(udid: string): Promise<string> {
+  const entry = phones.get(udid);
+  if (!entry) throw new Error("Not recording");
+  phones.delete(udid);
+  const temp = await phoneStopRecording(udid);
+  // checked again: the folder could have been swapped for a symlink while recording
+  await prepare(entry.workspace);
+  // never over a file that somehow exists
+  await copyFile(temp, entry.file, constants.COPYFILE_EXCL);
+  await rm(temp, { force: true });
+  return entry.file;
+}
+
 export const stopAllRecordings = () =>
-  Promise.allSettled([...running.keys()].map((udid) => stopRecording(udid)));
+  Promise.allSettled([
+    ...[...running.keys()].map((udid) => stopRecording(udid)),
+    ...[...phones.keys()].map((udid) => stopPhoneRecording(udid)),
+  ]);

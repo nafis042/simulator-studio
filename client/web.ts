@@ -269,7 +269,13 @@ export function mountScreen(
 }
 
 /** Pastes the picture into whatever has focus, as a pasted image file; false if nothing took it. */
-export function pasteImage(blob: unknown): boolean {
+export async function pasteImage(blob: unknown): Promise<boolean> {
+  // The composer's focus() can return before the text box has the focus, and a paste sent to
+  // anything else is ignored: wait up to a second for a text box.
+  const box = () =>
+    /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  for (let i = 0; i < 20 && !box(); i++)
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), 50));
   const clipboardData = new DataTransfer();
   // Paseo's paste handler skips files without a type
   clipboardData.items.add(new File([blob], "simulator.png", { type: "image/png" }));

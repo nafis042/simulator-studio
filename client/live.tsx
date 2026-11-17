@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { LONG_PRESS_MS, frameRpc, inputRpc } from "../shared/contracts";
+import { frameRpc, gesture, inputRpc } from "../shared/contracts";
 
 type Shown = { uri: string; width: number; height: number };
 type Point = { x: number; y: number };
@@ -127,21 +127,7 @@ export function LiveScreen({
       return;
     }
     const end = point(e);
-    const moved = distance(start, end);
-    if (moved < 8)
-      send({
-        kind: "tap",
-        x: start.x,
-        y: start.y,
-        holdMs: heldMs >= LONG_PRESS_MS ? Math.min(heldMs, 5_000) : 60,
-      });
-    else
-      send({
-        kind: "swipe",
-        from: { x: start.x, y: start.y },
-        to: end,
-        durationMs: Math.min(5_000, Math.max(80, heldMs)),
-      });
+    send(gesture({ x: start.x, y: start.y }, end, heldMs, distance(start, end) >= 8));
   }
 
   return (

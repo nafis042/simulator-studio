@@ -5,10 +5,12 @@ import {
   createRpc,
   frameRpc,
   inputRpc,
+  isPhone,
   recordRpc,
   listRpc,
   powerRpc,
   streamSub,
+  teamRpc,
   type Device,
 } from "./shared/contracts";
 import { latestWins } from "./shared/latest";
@@ -16,7 +18,22 @@ import * as android from "./server/android";
 import { PICKER_SOCKET, injectDeviceTools, syncAgentConfigs, workspaceAt } from "./server/agents";
 import { encode, forget, type Frame } from "./server/frames";
 import * as ios from "./server/ios";
-import { startRecording, stopAllRecordings, stopRecording } from "./server/record";
+import {
+  listPhones,
+  phoneHome,
+  phoneSwipe,
+  phoneTap,
+  phoneText,
+  phoneWatch,
+  stopPhones,
+} from "./server/phone";
+import {
+  startPhoneRecording,
+  startRecording,
+  stopAllRecordings,
+  stopPhoneRecording,
+  stopRecording,
+} from "./server/record";
 import { servePicker, type Picker } from "./server/picker";
 import {
   addAssignment,
@@ -30,7 +47,9 @@ import {
   removeAssignment,
   setOwned,
   setTarget,
+  setTeam,
   targetOf,
+  team,
 } from "./server/state";
 
 type Platform = { available: boolean; reason: string };
@@ -89,7 +108,10 @@ async function listPlatform(
 async function loadListing() {
   const [iosOk, androidOk] = await available();
   const [iosList, androidList] = await Promise.all([
-    listPlatform(iosOk, ios.listIos),
+    // a devicectl failure (no phone support in this Xcode, a hang) leaves the simulators listed
+    listPlatform(iosOk, async () =>
+      (await Promise.all([ios.listIos(), listPhones().catch(() => [])])).flat(),
+    ),
     listPlatform(androidOk, android.listAndroid),
   ]);
   if (androidList.platform.available) {
@@ -178,7 +200,17 @@ async function serial(deviceId: string): Promise<string> {
 }
 
 const frameOf = (deviceId: string): Promise<Frame | null> =>
-  deviceId.startsWith("ios:") ? ios.iosFrame(deviceId.slice(4)) : serial(deviceId).then(android.androidFrame);
+  isPhone(deviceId)
+    ? // shortcut: no polling view of an iPhone (phones, the browser); add a devicectl screenshot loop if wanted
+      Promise.reject(new Error("The iPhone view is in the desktop app only"))
+    : deviceId.startsWith("ios:")
+      ? ios.iosFrame(deviceId.slice(4))
+      : serial(deviceId).then(android.androidFrame);
+
+/** A personal phone's screen and touch are only for a workspace that holds it. */
+function held(deviceId: string): void {
+  if (!holderOf(deviceId)) throw new Error("Add the iPhone to a workspace first");
+}
 
 function boot(deviceId: string): void {
   if (deviceId.startsWith("ios:")) return track(deviceId, ios.bootIos(deviceId.slice(4)));
@@ -273,7 +305,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listRpc, async () => {
     await ready;
     const { devices, ...platforms } = await listDevices();
-    return { ...platforms, devices: withStatus(devices), assignments: [...assignments()] };
+    return { ...platforms, devices: withStatus(devices), assignments: [...assignments()], team: team() };
+  });
+
+  server.handle(teamRpc, async ({ team: value }) => {
+    await ready;
+    await setTeam(value);
+    return { message: value ? "Touch is set up for iPhones" : "Touch is off for iPhones" };
   });
 
   server.handle(assignRpc, async ({ deviceId, takeOver, release, ...workspace }) => {
@@ -351,6 +389,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(powerRpc, async ({ deviceId, action }) => {
     await ready;
     try {
+      if (isPhone(deviceId)) throw new Error("An iPhone can't be turned on, off or deleted from here");
       if (action === "boot") {
         if (booting.has(deviceId)) return { deviceId, message: "Already starting" };
         boot(deviceId);
@@ -378,8 +417,13 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
-  server.handle(streamSub, ({ deviceId }, { push, signal }) => {
+  server.handle(streamSub, async ({ deviceId }, { push, signal }) => {
     if (!deviceId.startsWith("ios:")) throw new Error("Live stream is for iOS simulators");
+    const phone = isPhone(deviceId);
+    if (phone) {
+      await ready; // who holds it is in the saved state
+      held(deviceId);
+    }
     let latest: { image?: Buffer; seq: number; rotate: number } = { seq: 0, rotate: 0 };
     let sentSeq = -1;
     let sentRotate = -1;
@@ -388,19 +432,36 @@ export default function contribute(server: PluginServerContext) {
     if (signal.aborted) stop.abort();
     signal.addEventListener("abort", () => stop.abort(), { once: true });
     const pump = latestWins(async () => {
+      // released meanwhile: a phone's screen is only for the workspace holding it
+      if (phone && !holderOf(deviceId)) return stop.abort();
       const { image, seq, rotate } = latest;
       if (!image || (seq === sentSeq && rotate === sentRotate)) return;
       sentSeq = seq;
       sentRotate = rotate;
       await push(Buffer.concat([Buffer.from([rotate]), image]));
     });
-    return ios.iosWatch(deviceId.slice(4), stop.signal, (state) => {
+    return (phone ? phoneWatch : ios.iosWatch)(deviceId.slice(4), stop.signal, (state) => {
       latest = state;
       pump().catch((error) => (console.error("devices.stream:", error), stop.abort()));
     });
   });
 
   server.handle(inputRpc, async ({ deviceId, input }) => {
+    if (isPhone(deviceId)) {
+      await ready;
+      held(deviceId);
+      const udid = deviceId.slice(4);
+      // touch installs a signed runner app on the phone: only once the user gave their team for it
+      const signer = team();
+      if (!signer) throw new Error("Set up touch for this iPhone first");
+      if (input.kind === "tap") await phoneTap(udid, signer, input.x, input.y, input.holdMs);
+      else if (input.kind === "swipe") await phoneSwipe(udid, signer, input.from, input.to, input.durationMs);
+      else if (input.kind === "text") await phoneText(udid, signer, input.text);
+      else if (input.kind === "button" && input.button === "home") await phoneHome(udid, signer);
+      // never on to the simulator code below, which would start Simulator.app for it
+      else throw new Error("An iPhone doesn't take that from here");
+      return { ok: true as const };
+    }
     if (deviceId.startsWith("ios:")) {
       const udid = deviceId.slice(4);
       if (input.kind === "tap") await ios.iosTap(udid, input.x, input.y, input.holdMs);
@@ -423,13 +484,14 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(recordRpc, async ({ deviceId, on }, { paseo }) => {
     if (!deviceId.startsWith("ios:")) throw new Error("Recording is for iOS simulators");
-    if (!on) return { path: await stopRecording(deviceId.slice(4)) };
+    const phone = isPhone(deviceId);
+    if (!on) return { path: await (phone ? stopPhoneRecording : stopRecording)(deviceId.slice(4)) };
     // The video goes into a real Paseo workspace's folder: the one around the folder the device's
     // holder gave, which came from a client and so isn't trusted as a place to write.
     const holder = holderOf(deviceId);
     const workspace = holder && (await workspaceAt(paseo, holder.directory));
     if (!workspace) throw new Error("Add the device to a workspace first");
-    await startRecording(deviceId.slice(4), workspace.directory);
+    await (phone ? startPhoneRecording : startRecording)(deviceId.slice(4), workspace.directory);
     return { path: "" };
   });
 
@@ -437,5 +499,6 @@ export default function contribute(server: PluginServerContext) {
     stopReaper();
     stopPicker();
     await stopAllRecordings();
+    await stopPhones();
   };
 }

@@ -3,7 +3,7 @@ import { useAgents, useComposers, useRpc, useSubscription } from "@getpaseo/plug
 import { Icon, copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Pressable, Text, View } from "react-native";
-import { inputRpc, recordRpc, streamSub } from "../shared/contracts";
+import { gesture, inputRpc, recordRpc, streamSub } from "../shared/contracts";
 import { latestWins } from "../shared/latest";
 import { Button, IconButton } from "./ui";
 import { copyImage, mountScreen, pasteImage, type Screen, type Tool } from "./web";
@@ -44,6 +44,7 @@ export function FastScreen({
   deviceId,
   workspaceId,
   annotating,
+  touch = "live",
   onShape,
   onDone,
 }: {
@@ -52,6 +53,8 @@ export function FastScreen({
   deviceId: string;
   workspaceId: string;
   annotating: boolean;
+  // a real iPhone takes whole gestures, about a second each ("whole"), or none until touch is set up
+  touch?: "live" | "whole" | "off";
   onShape(landscape: boolean): void;
   onDone(): void;
 }) {
@@ -65,15 +68,27 @@ export function FastScreen({
   useEffect(() => {
     let at = { x: 0, y: 0 };
     let down = false;
-    const send = (phase: "begin" | "move" | "end", x: number, y: number) =>
-      input({ deviceId, input: { kind: "touch", phase, x, y } }).then(
+    let start = { x: 0, y: 0, time: 0 };
+    const deliver = (body: Parameters<typeof input>[0]["input"]) =>
+      input({ deviceId, input: body }).then(
         () => setProblem(null),
         (error: unknown) => setProblem(message(error)),
       );
+    const send = (phase: "begin" | "move" | "end", x: number, y: number) =>
+      deliver({ kind: "touch", phase, x, y });
     // moves coalesce, begin and end are never dropped
     const move = latestWins(async () => down && send("move", at.x, at.y));
     screen.current = mountScreen(host.current, {
       touch(phase, x, y) {
+        if (touch === "off") return;
+        if (touch === "whole") {
+          if (phase === "begin") start = { x, y, time: Date.now() };
+          if (phase !== "end") return;
+          // moved less than 2% of the picture: a tap
+          const moved = Math.hypot(x - start.x, y - start.y) >= 0.02;
+          void deliver(gesture({ x: start.x, y: start.y }, { x, y }, Date.now() - start.time, moved));
+          return;
+        }
         at = { x, y };
         down = phase !== "end";
         if (phase === "move") void move();
@@ -226,7 +241,7 @@ function AnnotateBar({
       try {
         // focus() opens the agent's tab if needed and may take a while to give up
         await composer?.focus();
-        pasted = composer !== undefined && pasteImage(blob);
+        pasted = composer !== undefined && (await pasteImage(blob));
       } catch {}
       if (!pasted) await copyImage(blob);
       toast.show(pasted ? "Added to the chat" : "Copied. Press Cmd+V in the chat.", { variant: "success" });

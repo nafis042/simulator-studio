@@ -19,6 +19,8 @@ interface State {
   agentTools: string[];
   // workspace id -> the device its agents last chose with use_device
   targets: Record<string, string>;
+  // the Apple developer team the user gave for panel touch on physical iPhones; absent = touch off
+  team?: string;
 }
 
 let state: State = { assignments: [], owned: [], agentTools: [], targets: {} };
@@ -61,6 +63,11 @@ export async function allowAgentTools(deviceId: string, allow: boolean): Promise
   }
   // allowed again later, it doesn't pull agents back from where they moved
   else forgetTarget(deviceId);
+  await save();
+}
+export const team = () => state.team ?? "";
+export async function setTeam(value: string): Promise<void> {
+  state.team = value || undefined;
   await save();
 }
 export const holderOf = (deviceId: string) => state.assignments.find((a) => a.deviceId === deviceId);

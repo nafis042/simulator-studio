@@ -3,7 +3,7 @@ import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
 import { ActivityIndicator, Platform, Text, View } from "react-native";
-import { inputRpc, type Assignment, type Device } from "../shared/contracts";
+import { inputRpc, isPhone, teamRpc, type Assignment, type Device } from "../shared/contracts";
 import { splitDevices } from "../shared/select";
 import { canDuplicate, canTurnOff, canTurnOn, onFirst, useAction, useDeviceRpcs, useDevices } from "./data";
 import { FastScreen, RecordButton } from "./fast";
@@ -34,7 +34,7 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
     );
   }
   const workspace: Workspace = { workspaceId, workspaceName: ws.name, directory: ws.directory };
-  const { assignments, devices: all } = devices.data;
+  const { assignments, devices: all, team } = devices.data;
   // this workspace's devices in the order they were added; the panel shows one at a time
   const mine = assignments
     .filter((a) => a.workspaceId === workspaceId)
@@ -42,6 +42,7 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
   const device = mine.find((d) => d.id === selected) ?? mine[0];
   // shortcut: Android and non-desktop clients keep the polling view; move them to streamSub when needed
   const fast = desktop && device?.platform === "ios";
+  const phone = device !== undefined && isPhone(device.id);
   const landscape = shape !== null && shape.deviceId === device?.id && shape.landscape;
   const picker = (
     <DevicePicker
@@ -86,16 +87,24 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
             device={device}
             workspace={workspace}
             landscape={landscape}
+            input={!phone || Boolean(team)}
             onAdd={() => setPicking(true)}
             onAnnotate={fast ? () => setAnnotating(!annotating) : undefined}
           />
-          <AgentTools theme={theme} hostId={host.id} device={device} />
+          {/* shortcut: agents can't drive a physical iPhone yet (their runner would need the team too) */}
+          {phone ? (
+            <PhoneTouch theme={theme} hostId={host.id} team={team} />
+          ) : (
+            <AgentTools theme={theme} hostId={host.id} device={device} />
+          )}
           {device.state === "booted" ? (
             // keyed: a new device starts with an empty picture, not taps on the old one's
             <>
               {fast ? (
                 <FastScreen
-                  key={device.id}
+                  // remounted when touch is set up: its handlers are made once
+                  key={phone ? `${device.id}:${team}` : device.id}
+                  touch={phone ? (team ? "whole" : "off") : "live"}
                   theme={theme}
                   hostId={host.id}
                   deviceId={device.id}
@@ -121,6 +130,11 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
           ) : (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 16 }}>
               {canTurnOn(device) ? <BootButton theme={theme} hostId={host.id} device={device} /> : null}
+              {phone ? (
+                <Text style={{ color: c.foregroundMuted, textAlign: "center" }}>
+                  Connect the iPhone to this Mac and unlock it.
+                </Text>
+              ) : null}
               {device.state === "booting" ? <ActivityIndicator color={c.foregroundMuted} /> : null}
             </View>
           )}
@@ -206,6 +220,81 @@ function AgentTools({ theme, hostId, device }: { theme: PluginTheme; hostId: str
   );
 }
 
+/**
+ * Touch on a physical iPhone goes through agent-device's test runner, signed with the user's Apple
+ * developer team and installed on the phone. Off until they give the team here.
+ */
+function PhoneTouch({ theme, hostId, team }: { theme: PluginTheme; hostId: string; team: string }) {
+  const save = useRpc(teamRpc);
+  const { busy, perform } = useAction(hostId);
+  const [asking, setAsking] = useState(false);
+  const [text, setText] = useState(team);
+  const c = theme.colors;
+  const valid = /^[A-Z0-9]{10}$/.test(text);
+  const set = async (value: string) => {
+    if (await perform(() => save({ team: value }))) setAsking(false);
+  };
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+      <Icon name="Pointer" size={14} color={c.foregroundMuted} />
+      <Text style={{ color: c.foregroundMuted, fontSize: 12, flex: 1, minWidth: 160 }}>
+        {team
+          ? "Taps and swipes reach the iPhone after you let go, about a second each."
+          : "Watch only: touch isn't set up for iPhones."}
+      </Text>
+      {team ? (
+        <Button theme={theme} label="Turn off" disabled={busy} onPress={() => void set("")} />
+      ) : (
+        <Button theme={theme} icon="Pointer" label="Set up touch" onPress={() => setAsking(true)} />
+      )}
+      <Modal
+        title="Control the iPhone from here?"
+        open={asking}
+        onOpenChange={(open) => !open && !busy && setAsking(false)}
+      >
+        <Modal.Content>
+          <Text style={{ color: c.foreground, lineHeight: 20 }}>
+            On your first tap, agent-device builds its test runner app with Xcode, signs it with your Apple
+            developer team and installs it on the iPhone. That registers an app ID in the team and takes about
+            half a minute. Nothing is downloaded.
+          </Text>
+          <Text style={{ color: c.foregroundMuted, lineHeight: 20 }}>
+            The iPhone must be on a cable, unlocked and in portrait, with Developer Mode on. If this Mac asks
+            for it, run "sudo DevToolsSecurity -enable" in Terminal once. Turning this off stops touch; the
+            runner app stays on the phone.
+          </Text>
+          <TextInput
+            value={text}
+            onChangeText={(value) => setText(value.trim().toUpperCase())}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            placeholder="Team ID, 10 characters (Xcode › Settings › Accounts)"
+            placeholderTextColor={c.foregroundMuted}
+            style={{
+              color: c.foreground,
+              backgroundColor: c.surface2,
+              borderColor: c.border,
+              borderWidth: 1,
+              borderRadius: 8,
+              padding: 10,
+            }}
+          />
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+            <Button theme={theme} label="Not now" disabled={busy} onPress={() => setAsking(false)} />
+            <Button
+              theme={theme}
+              primary
+              label="Allow touch"
+              disabled={!valid || busy}
+              onPress={() => void set(text)}
+            />
+          </View>
+        </Modal.Content>
+      </Modal>
+    </View>
+  );
+}
+
 function BootButton({ theme, hostId, device }: { theme: PluginTheme; hostId: string; device: Device }) {
   const { power } = useDeviceRpcs();
   const { busy, perform } = useAction(hostId);
@@ -227,6 +316,7 @@ function Toolbar({
   device,
   workspace,
   landscape,
+  input: canInput,
   onAdd,
   onAnnotate,
 }: {
@@ -236,6 +326,8 @@ function Toolbar({
   workspace: Workspace;
   // from the last picture, so it is right after a remount too
   landscape: boolean;
+  // false for an iPhone without touch set up: nothing here could reach it
+  input: boolean;
   onAdd(): void;
   onAnnotate?(): void;
 }) {
@@ -287,14 +379,18 @@ function Toolbar({
         </View>
         {on ? (
           <>
-            <IconButton theme={theme} icon="House" label="Home" onPress={() => key("home")} />
+            {canInput ? (
+              <IconButton theme={theme} icon="House" label="Home" onPress={() => key("home")} />
+            ) : null}
             {device.platform === "android" ? (
               <IconButton theme={theme} icon="ArrowLeft" label="Back" onPress={() => key("back")} />
             ) : null}
             {device.platform === "android" ? (
               <IconButton theme={theme} icon="Layers" label="Recent apps" onPress={() => key("appSwitch")} />
             ) : null}
-            <IconButton theme={theme} icon="RotateCw" label="Rotate" onPress={rotate} />
+            {isPhone(device.id) ? null : (
+              <IconButton theme={theme} icon="RotateCw" label="Rotate" onPress={rotate} />
+            )}
             {onAnnotate ? (
               <IconButton theme={theme} icon="Pencil" label="Draw on a screenshot" onPress={onAnnotate} />
             ) : null}
@@ -307,7 +403,9 @@ function Toolbar({
                 workspaceId={workspace.workspaceId}
               />
             ) : null}
-            <IconButton theme={theme} icon="Keyboard" label="Type text" onPress={() => setTyping(true)} />
+            {canInput ? (
+              <IconButton theme={theme} icon="Keyboard" label="Type text" onPress={() => setTyping(true)} />
+            ) : null}
           </>
         ) : null}
         <IconButton

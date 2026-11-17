@@ -21,6 +21,11 @@ These work in the Paseo desktop app on a Mac, for iOS simulators.
   repository's local exclude file, so videos stay out of git and your `.gitignore` is untouched.
   Recordings stop by themselves after 5 minutes.
 
+- **A real iPhone or iPad on a cable.** It appears in the device list next to the simulators, with
+  the same fast view, pencil and record button. Touch is optional and slower: after you give your
+  Apple developer Team ID in the panel, taps, long presses, swipes, typed text and Home reach the
+  phone when you let go, about a second each, in portrait. Agents can't drive a real iPhone yet.
+
 Android devices, and Paseo on a phone or in a browser, use the slower live view described below.
 
 ## Use it instead of Devices
@@ -72,6 +77,11 @@ and copies made for it are turned off; a simulator copy keeps its data until you
 - iOS: a Mac with Apple silicon and Xcode. The live view uses
   [serve-sim](https://github.com/EvanBacon/serve-sim), which needs Simulator.app (the plugin keeps
   it running hidden) and, when Paseo runs as the desktop app, Node.js 20 or newer in PATH.
+- A real iPhone or iPad: paired with this Mac, on a cable, unlocked, with the Paseo desktop app.
+  The first view compiles a small capture helper with Xcode's Swift compiler and macOS asks once (and again after an update that changes the helper)
+  to let "Simulator Studio Capture" use the camera, which is how macOS offers a cabled phone's
+  screen. Touch also needs Developer Mode on the phone, an Apple developer team, and developer
+  mode for Apple's tools on the Mac (`sudo DevToolsSecurity -enable`).
 - Android: the Android SDK (adb, and the emulator package for AVDs). USB devices work too, at
   about one frame a second, and can't be turned on or off from here.
 - Agent tools run on the daemon's Node.js, which needs to be 22.12 or newer; the desktop app's
@@ -91,6 +101,17 @@ Frames and input travel between the host and your Paseo apps. An image you add t
 tools, including screenshots and screen text, is sent to the agent's model provider like any other
 tool result. So are the names and states of the devices you allowed agents on, and which workspace
 holds each, when an agent lists them.
+
+A cabled iPhone's screen is read by a separate helper app the plugin builds from its own source
+on first use and keeps in Paseo's plugin data folder. It sends pictures to the plugin over a Unix
+socket in a folder only your user can open, runs only while a panel shows the phone or a recording
+you started is running, and stops a few seconds after. Its camera permission belongs to that
+helper: once you allow it, other programs running as your user could start it to watch the cabled
+phone too, as they can already take screenshots of it with Xcode's tools. A recording is written
+by the helper to a temporary folder and moved into the workspace by the plugin. Everything shown on
+the phone, notifications included, is in what you draw on or record. Touch on an iPhone is off
+until you save a Team ID: on the first tap agent-device builds its XCTest runner with Xcode, signs
+it with that team (which registers an app ID there) and installs it on the phone.
 
 The first time an agent drives a device, agent-device installs its helpers on it: an XCTest runner
 app it builds locally with Xcode for iOS, and two helper apps it ships with for Android (one reads

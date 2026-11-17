@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
-import type { Device } from "../shared/contracts";
+import { gesture, type Device } from "../shared/contracts";
 import { latestWins } from "../shared/latest";
 import { splitDevices } from "../shared/select";
 
 // state.ts picks its file from PASEO_HOME at import time: point it at a throwaway folder first
 let state: typeof import("./state");
+let phone: typeof import("./phone");
 before(async () => {
   process.env.PASEO_HOME = mkdtempSync(path.join(os.tmpdir(), "devices-test-"));
+  // phone.ts finds the plugin directory through the daemon config
+  const plugin = { path: path.join(import.meta.dirname, "..") };
+  writeFileSync(path.join(process.env.PASEO_HOME, "config.json"), JSON.stringify({ plugins: { x: plugin } }));
+  phone = await import("./phone");
   state = await import("./state");
   await state.loadState();
 });
@@ -207,4 +212,36 @@ test("latestWins runs once more, not once per call, after a busy send", async ()
   release();
   await first;
   assert.equal(runs, 2);
+});
+
+test("frames() joins split chunks, splits joined ones and drops an oversize message", () => {
+  const message = (type: number, text: string) => {
+    const header = Buffer.alloc(5);
+    header[0] = type;
+    header.writeUInt32BE(text.length, 1);
+    return Buffer.concat([header, Buffer.from(text)]);
+  };
+  const [one, two] = [message(0, "abc"), message(1, "de")];
+  const first = phone.frames(one.subarray(0, 4));
+  assert.equal(first.messages.length, 0);
+  const second = phone.frames(Buffer.concat([first.rest, one.subarray(4)]));
+  assert.deepEqual(
+    second.messages.map((m) => [m.type, m.payload.toString()]),
+    [[0, "abc"]],
+  );
+  const both = phone.frames(Buffer.concat([one, two]));
+  assert.deepEqual(
+    both.messages.map((m) => m.payload.toString()),
+    ["abc", "de"],
+  );
+  const huge = Buffer.from([0, 0xff, 0xff, 0xff, 0xff, 1]);
+  assert.deepEqual(phone.frames(huge), { messages: [], rest: Buffer.alloc(0) });
+});
+
+test("gesture: a still finger taps or long-presses, a moved one swipes", () => {
+  const a = { x: 0.1, y: 0.2 };
+  const b = { x: 0.5, y: 0.2 };
+  assert.deepEqual(gesture(a, a, 100, false), { kind: "tap", x: 0.1, y: 0.2, holdMs: 60 });
+  assert.deepEqual(gesture(a, a, 9_000, false), { kind: "tap", x: 0.1, y: 0.2, holdMs: 5_000 });
+  assert.deepEqual(gesture(a, b, 10, true), { kind: "swipe", from: a, to: b, durationMs: 80 });
 });
